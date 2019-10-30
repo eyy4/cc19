@@ -1,0 +1,181 @@
+# Diverging bar charts
+
+Elizabeth Yum
+
+## Overview
+
+This section covers how to make diverging bar charts
+
+## tl;dr
+
+Diverging bar charts can be a good way to show differences in responses to a Likert Scale (e.g., "strongly agree" vs. "strongly disagree").
+
+This tutorial covers two ways to create Likert graphs: one with the Likert function in the package HH, and one with ggplot2. Each of the ways has its pros and cons, but unfortunately, both methods do require a bit of work cleaning up and getting data into the right format.
+
+As a result, as both are a multi-step process completely dependent on the state your data is in, there is no tl;dr where you can just plug and play. Therefore, the following sections will walk you through the steps to prepare your data before you can each the point of plotting.
+
+## Divering Bar Charts with Likert in the HH Package
+
+### Getting your data into the right format
+
+The Likert function requires data to be "messy" such that row in your dataframe should correspond to the categories in the y-axis of your graph and each column in your dataframe should correspond to the percentage values for each response.
+
+In the original survey response data, each row corresponded to one respondent's entry, and responses to each question was recorded column-wise. To get it into the right format for the Likert function, we will summarize all responses, discard NA responses, calculate percentage responses, and transpose the data. Finally, the order of your columns matter, as the Likert function will consider the left most column the most "negative", and the right most column the most "positive" so lastly we reorder the columns into the format we need.
+
+```{r message=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(RColorBrewer)
+library(HH)
+library(dplyr)
+library(reshape2)
+
+data("useR2016", package = "forwards")
+
+useR2016_surveyqs <- useR2016 %>% select(Q15, Q15_B, Q15_C, Q15_D)
+
+likert_format <- useR2016_surveyqs %>%
+  gather(key = "key", value = "value") %>%
+  group_by(key, value) %>%
+  summarize(sum=n()) %>% 
+  ungroup() %>%
+  filter(!is.na(value)) %>%
+  group_by(key) %>% 
+  mutate(percent = sum/sum(sum)) %>%
+  ungroup() %>%
+  select(-sum) %>%
+  spread(value, percent) %>%
+  select(key, "Strongly disagree", "Disagree", "No opinion", "Agree", "Strongly agree")
+
+likert_format$key <- recode(likert_format$key,"Q15" = "Writing R is fun", 
+                     "Q15_B" = "Writing R is considered cool or interesting by my peers", 
+                     "Q15_C" = "Writing R is a monotonous task", 
+                     "Q15_D" = "Writing R is difficult")
+
+likert_format$key <- str_wrap(likert_format$key, 25)
+
+head(likert_format)
+```
+
+
+### Plotting with the Likert function
+
+Finally, we can plot the data with the Likert function below.
+
+```{r message=FALSE}
+HH::likert(key~., 
+          likert_format, 
+          positive.order=TRUE,
+          main= "Survey Responses from UseR! 2016",
+          xlab = "Percentage",
+          ylab = "")
+```
+
+## Divering Bar Charts with ggplot2
+
+### Getting your data into the right format
+
+It is first critical to get your data into the right format, and ggplot requires a very different format than the Likert function.
+
+Unlike the Likert function, we initially want our data to be "tidy". Similarly to the Likert, the below removes NA values from the responses. 
+
+```{r message=FALSE}
+ggplot_format <- useR2016_surveyqs %>% 
+  gather(key = "key", value = "value") %>%
+  group_by(key, value) %>% 
+  filter(!is.na(value)) %>% 
+  summarize(sum=n()) %>% 
+  ungroup() %>%
+  group_by(key) %>% 
+  mutate(percent = sum/sum(sum)) %>% 
+  ungroup() %>%
+  select(-sum)
+
+ggplot_format$key <- recode(ggplot_format$key,"Q15" = "Writing R is fun", 
+                     "Q15_B" = "Writing R is considered cool or interesting by my peers", 
+                     "Q15_C" = "Writing R is a monotonous task", 
+                     "Q15_D" = "Writing R is difficult")
+
+ggplot_format$key <- str_wrap(ggplot_format$key, 25)
+
+head(ggplot_format)
+```
+
+### Setting the color palette
+
+From here, you must start to format your data correctly for ggplot to process it as a diverging stacked barchart. In order to help with this, it is often necessary to define a color palette and assign it to your data in a new separate column. 
+
+See colorbrewer2.org for helpful resources on diverging color palettes.
+
+```{r message=FALSE}
+mylevels <- c("Strongly disagree", "Disagree", "No opinion", "Agree",  "Strongly agree")
+mycolors <- brewer.pal(5,"PiYG")
+
+ggplot_format <- inner_join(ggplot_format, as.data.frame(cbind(value,colors)))
+```
+
+### Creating two separate data frames for positive and negative values
+
+We finally go back to our original dataset with the intention of splitting it into two. If we have neutral responses, one dataset should contain all the positive responses and 1/2 of the neutral responses, and the second should contain all of the negative responses and 1/2 of the neutral responses. If we had no neutral responses (e.g., only "Strongly Agree", "Agree", "Disagree", and "Strongly Disagree"), then one dataset should contain only positive responses and one dataset should contain only negative responses.
+
+The below accomplishes this, and also goes to the color columns in the dataset and defines the levels for negatives (RColorBrewer gives us values from low to high so for negatives the levels are in order) and positives (as RColorBrewer gives us values from low to high, the order for positive values is the reverse).
+
+```{r message=FALSE}
+ggplot_format_neutral <- ggplot_format %>% group_by(key) %>% filter(value == "No opinion") %>% mutate(percent = percent/2) %>% ungroup()
+
+negatives <- ggplot_format %>% filter(value == "Disagree" | value == "Strongly disagree")
+negatives <- rbind(negatives, ggplot_format_neutral)
+
+positives <- ggplot_format %>% filter(value == "Agree" | value == "Strongly agree")
+positives <- rbind(positives, ggplot_format_neutral)
+
+positives$colors <- factor(positives$colors, levels = rev(mycolors))
+negatives$colors <- factor(negatives$colors, levels = mycolors)
+```
+
+### Plotting a Likert Graph with ggplot
+
+We can finally put it all together. The below takes our two positive and negative datasets, and plots them onto one bar chart.
+
+```{r message=FALSE}
+ggplot() + 
+  geom_bar(data = positives, aes(x= reorder(key, percent), y= percent, fill=colors), position="stack", stat="identity") +
+  geom_bar(data = negatives, aes(x= reorder(key, percent), y= -percent, fill=colors), position="stack", stat="identity") +
+  geom_hline(yintercept=0, color =c("gray")) +
+  scale_fill_identity("Rating", labels = mylevels, breaks=mycolors, guide="legend") + 
+  coord_flip() + 
+  scale_y_continuous(limits = c(-1,1),
+                     labels = scales::percent) +
+  labs(title="Survey Responses from UseR! 2016", y="",x="") +
+  theme(plot.title = element_text(size=14, hjust=0.5),
+        axis.text.y = element_text(hjust=0),
+        legend.position = "bottom")
+```
+
+## Theory
+
+## When to use
+
+Diverging Stacked Bar Charts are best for Likert scale responses. They can be used for both showing responses as percentages and responses as gross numbers.
+
+## Considerations
+
+### Applicability
+
+Diverging stacked bar charts are fun to look at, but when used for percentages, a 100% stacked bar chart could convey just as much useful information and would be a lot easier to implement. When used for gross values, their non-uniform starting points make values difficult to compare, and a grouped bar chart may be just as useful.
+
+### Colors
+
+Diverging stacked bar charts require diverging color palettes. The Likert function will take care of this on its own, but the ggplot method will require you to create your own or select one from an existing color palette on Color Brewer or comparable packages.
+
+### Which Method to Use
+
+The Likert function is much simpler to implement if you have the data in the right format, and takes away much of the headache. However, the ggplot method is much more manual to implement, but does allow for more customization. Both require data to be in the format that is right for that particular method.
+
+## External resources
+
+- [Link](https://rdrr.io/cran/HH/man/likert.html){target="_blank"}: An overview of the Likert function.
+
+- [Link](https://blog.datawrapper.de/divergingbars/){target="_blank"}: An overview of diverging bar charts making the case of when not to use them.
+
+- [Link](http://rnotr.com/likert/ggplot/barometer/likert-plots/){target="_blank"}: Another in-depth guide to plotting diverging bar charts on ggplot
